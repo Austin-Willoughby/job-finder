@@ -1,0 +1,15 @@
+pandas
+numpy
+scikit-learn
+xgboost
+scipy
+selenium
+beautifulsoup4
+nltk
+joblib
+matplotlib
+openai
+python-dotenv
+sentence-transformers
+requests
+llama-cpp-python

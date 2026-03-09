@@ -1,0 +1,30 @@
+# Data & Environments
+data/
+.env
+venv/
+.venv/
+env/
+
+# Python Cache & Tests
+__pycache__/
+.pytest_cache/
+.ipynb_checkpoints/
+*.py[cod]
+*$py.class
+
+# Large Files & Binaries
+*.csv
+*.json
+*.pkl
+models/*.pkl
+models/*.gguf
+models/
+
+# Logs & OS specifics
+*.log
+.DS_Store
+Thumbs.db
+
+# IDE Settings
+.vscode/
+.idea/
