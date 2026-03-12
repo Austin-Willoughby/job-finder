@@ -22,7 +22,7 @@ def test_pipeline():
 
     url = "https://www.google.com/search?client=firefox-b-1-d&sca_esv=1ebb0e033accb772&q=data+scientist+san+francisco&prmd=invmsb&sa=X&biw=1760&bih=875&dpr=1.09&jbr=sep:0&ibp=htl;jobs&ved=2ahUKEwj49KjYwJqGAxWHQzABHdcfACMQudcGKAF6BAgiECk#fpstate=tldetail&htivrt=jobs&htidocid=R2A6Q-IkYWZ1jy46AAAAAA%3D%3D"
     
-    print("Scraping 2 jobs from LinkedIn and some from Google...")
+    print("Scraping jobs via LinkedIn API...")
     df = load_and_predict_new_jobs(
         job_board_url=url,
         stop_words=stop_words,
@@ -34,11 +34,11 @@ def test_pipeline():
         pca=transformers['pca'],
         pretrained_model=pretrained_model,
         include_linkedin=True,
-        scrape_google=True,
-        linkedin_cap=2,
-        count=0,
-        num_scrolls_linkedin=0,
-        num_scrolls_google=0
+        scrape_google=False,
+        linkedin_cap=5,
+        use_api=True,
+        keywords="Data Scientist",
+        location="San Jose"
     )
     
     if df.empty:

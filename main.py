@@ -13,16 +13,20 @@ from job_finder.config import KEYWORDS_BINS, COST_PER_1K_TOKENS
 from job_finder.features import load_and_preprocess_data, create_corpus, create_bag_of_words
 from job_finder.models import evaluate_models, load_and_predict_new_jobs
 from job_finder.evaluator import get_desirability
-from job_finder.semanticmodels import rank_jobs
+from job_finder.semanticmodels import rank_jobs, embed_texts
 from job_finder.scraper import scrape_linkedin_jobs, scrape_linkedin_jobs_api, scrape_google_jobs, get_chrome_driver
 from job_finder.database import JobDatabase
 from job_finder.scrapers.linkedin import AuthenticatedLinkedInScraper
-from job_finder.config import PROFILE_TEXT, CRITERIA, CHROME_USER_DATA_DIR
+from job_finder.config import PROFILES, CRITERIA, CHROME_USER_DATA_DIR, DEFAULT_LOCATION, DEFAULT_DISTANCE
 import job_finder.evaluator as evaluator
 import numpy as np
+import logging
+from job_finder.logging_config import setup_logging, get_logger
+
+logger = get_logger(__name__)
 
 def train_pipeline(data_path: str, synthetic_path: str):
-    print("Starting training pipeline...")
+    logger.info("Starting training pipeline...")
     stop_words = set(stopwords.words("english")).union(['said', 'would', 'could', "also", "new"])
     df = load_and_preprocess_data(data_path, synthetic_path, stop_words)
     
@@ -67,14 +71,14 @@ def train_pipeline(data_path: str, synthetic_path: str):
     print("Models and transformers saved to 'models/' directory.")
 
 def predict_pipeline(evaluate: bool = False, num_scrolls_linkedin: int = 40, num_scrolls_google: int = 2):
-    print("Starting prediction pipeline...")
+    logger.info("Starting prediction pipeline...")
     stop_words = set(stopwords.words("english")).union(['said', 'would', 'could', "also", "new"])
     
     try:
         pretrained_model = joblib.load('models/best_logistic_regression_model.pkl')
         transformers = joblib.load('models/transformers.pkl')
     except FileNotFoundError:
-        print("Models not found. Please run the training pipeline first.")
+        logger.error("Models not found. Please run the training pipeline first.")
         return
         
     job_board_urls = {
@@ -110,7 +114,7 @@ def predict_pipeline(evaluate: bool = False, num_scrolls_linkedin: int = 40, num
     all_cities_output_df = pd.concat(dfs, ignore_index=True)
     
     if evaluate:
-        print("Evaluating desirability with OpenAI...")
+        logger.info("Evaluating desirability with OpenAI...")
         all_cities_output_df["desirability"] = all_cities_output_df.apply(
             lambda row: get_desirability(
                 row.get("companies", ""),
@@ -132,89 +136,134 @@ def predict_pipeline(evaluate: bool = False, num_scrolls_linkedin: int = 40, num
     print(f"Results saved to {file_name}")
 
 def semantic_pipeline(num_scrolls_linkedin: int = 40, num_scrolls_google: int = 2, 
-                      scrape_only: bool = False, use_auth: bool = False, 
+                      scrape_only: bool = False, score_only: bool = False,
+                      use_auth: bool = False, 
                       max_pages: int = 5, use_api: bool = False,
-                      distance: int = 50, f_tpr: Optional[str] = None):
-    print("Starting semantic discovery pipeline...")
+                      distance: int = DEFAULT_DISTANCE, f_tpr: Optional[str] = 'r2592000',
+                      keywords: str = "Data Scientist", location: str = DEFAULT_LOCATION):
+    logger.info("Starting semantic discovery pipeline...")
     
-    # LinkedIn Search URL provided by user for San Jose
-    linkedin_target_url = "https://www.linkedin.com/jobs/search?keywords=Data%20Scientist&location=San%20Jose&geoId=106233382&distance=50&f_TPR=r2592000&position=1&pageNum=0"
-    
-    job_board_urls = {
-        "san_jose": r"https://www.google.com/search?q=data+scientist+jobs+san+jose&ibp=htl;jobs",
-    }
-    
-    # Scrape jobs from sources    
-    db = JobDatabase()
-    
-    if use_auth:
-        if not CHROME_USER_DATA_DIR:
-            print("Error: CHROME_USER_DATA_DIR not set in .env or config.py. Authentication required.")
+    if not score_only:
+        # LinkedIn Search URL provided by user for San Jose
+        linkedin_target_url = f"https://www.linkedin.com/jobs/search?keywords={keywords.replace(' ', '%20')}&location={location.replace(' ', '%20')}&distance={distance}&f_TPR={f_tpr}"
+        logger.info(f"Search URL: {linkedin_target_url}")
+        
+        # Scrape jobs from sources    
+        db = JobDatabase()
+        
+        if use_auth:
+            if not CHROME_USER_DATA_DIR:
+                print("Error: CHROME_USER_DATA_DIR not set in .env or config.py. Authentication required.")
+                db.close()
+                return
+                
+            print("Using authenticated LinkedIn scraper...")
+            driver = get_chrome_driver(user_data_dir=CHROME_USER_DATA_DIR)
+            auth_scraper = AuthenticatedLinkedInScraper(driver, db=db)
+            try:
+                auth_scraper.scrape_jobs(linkedin_target_url, max_pages=max_pages)
+            finally:
+                driver.quit()
+        elif use_api:
+            print(f"Using LinkedIn API discovery for {keywords} in {location} (max jobs: {max_pages * 25}, distance: {distance}, time: {f_tpr or 'any'})...")
+            scrape_linkedin_jobs_api(db=db, keywords=keywords, location=location, 
+                                     max_jobs=max_pages * 25, distance=distance, f_tpr=f_tpr)
+        else:
+            print("Using guest LinkedIn scraper (limited to ~70 jobs)...")
+            linkedin_jobs_df = scrape_linkedin_jobs(db=db, max_jobs=50, num_scrolls=num_scrolls_linkedin)
+        
+        if scrape_only:
+            logger.info("Scrape-only mode. New jobs have been added to the database.")
             db.close()
             return
-            
-        print("Using authenticated LinkedIn scraper...")
-        driver = get_chrome_driver(user_data_dir=CHROME_USER_DATA_DIR)
-        auth_scraper = AuthenticatedLinkedInScraper(driver, db=db)
-        try:
-            auth_scraper.scrape_jobs(linkedin_target_url, max_pages=max_pages)
-        finally:
-            driver.quit()
-    elif use_api:
-        print(f"Using LinkedIn API discovery (max jobs: {max_pages * 25}, distance: {distance}, time: {f_tpr or 'any'})...")
-        scrape_linkedin_jobs_api(db=db, keywords="Data Scientist", location="San Jose", 
-                                 max_jobs=max_pages * 25, distance=distance, f_tpr=f_tpr)
+        db.close() # Close for now, will reopen or use pd.read_sql
     else:
-        print("Using guest LinkedIn scraper (limited to ~70 jobs)...")
-        linkedin_jobs_df = scrape_linkedin_jobs(db=db, max_jobs=50, num_scrolls=num_scrolls_linkedin)
-    
-    # Optional: Scrape google
-    # for city, url in job_board_urls.items():
-    #     google_jobs_df = scrape_google_jobs(url, num_scrolls=num_scrolls_google)
-    #     dfs.append(google_jobs_df)
-    
-    if scrape_only:
-        print("Scrape-only mode. New jobs have been added to the database.")
-        db.close()
-        return
+        logger.info("Score-only mode. Skipping scraping and processing existing database jobs.")
 
-    # Retrieve jobs from the database that don't have a similarity score yet
+    db = JobDatabase()
+    # Or we can re-score all jobs if needed. For now, let's just score unscored ones.
     unscored_jobs_df = pd.read_sql_query("SELECT * FROM jobs WHERE similarity_score IS NULL", db.conn)
     
     if unscored_jobs_df.empty:
-        print("No unscored jobs in database to process.")
+        logger.info("No unscored jobs in database to process.")
         db.close()
         return
         
-    print(f"Found {len(unscored_jobs_df)} unscored jobs in the database.")
+    logger.info(f"Found {len(unscored_jobs_df)} unscored jobs in the database.")
     
-    # Rank jobs based on profile and criteria
-    target_text = f"{PROFILE_TEXT}\n\nKey Requirements:\n{CRITERIA}"
+    # Pre-calculate embeddings for anchor profiles
+    logger.info("Pre-calculating embeddings for anchor profiles...")
+    profile_embeddings = {}
+    for key, p in PROFILES.items():
+        combined_text = f"{p['text']}\n\nKey Requirements:\n{CRITERIA}"
+        profile_embeddings[key] = embed_texts([combined_text], is_query=True)
     
-    ranked_df = rank_jobs(unscored_jobs_df, target_text, score_threshold=40.0)
+    # NEW logic: Calculate relevance for ALL unscored jobs first
+    # This ensures we don't re-embed them next time even if they don't meet the threshold
+    from job_finder.semanticmodels import calculate_relevance
+    scored_df = calculate_relevance(unscored_jobs_df, profile_embeddings)
+    
+    # Update DB with similarity scores for ALL processed jobs
+    logger.info(f"Updating database with scores for {len(scored_df)} jobs in batches...")
+    
+    # Batch update to avoid N+1 queries while ensuring progress is saved
+    batch_size = 500
+    cursor = db.conn.cursor()
+    
+    for i in range(0, len(scored_df), batch_size):
+        batch = scored_df.iloc[i:i+batch_size]
+        update_data = []
+        for _, row in batch.iterrows():
+            update_data.append((
+                row['similarity_score'],
+                row['score_geospatial'],
+                row['score_energy'],
+                row['score_cv_robotics'],
+                row['score_llm_science'],
+                row['job_id']
+            ))
+        
+        cursor.executemany("""
+            UPDATE jobs 
+            SET similarity_score = ?, 
+                score_geospatial = ?, 
+                score_energy = ?, 
+                score_cv_robotics = ?, 
+                score_llm_science = ? 
+            WHERE job_id = ?
+        """, update_data)
+        
+        db.conn.commit()
+        logger.info(f"  > Committed scores for items {i+1} to {min(i+batch_size, len(scored_df))}...")
+    
+    db.close()
+
+    # Sort and rank jobs for the final report
+    ranked_df = scored_df.sort_values(by='similarity_score', ascending=False).reset_index(drop=True)
     
     if ranked_df.empty:
-        print("No jobs matched the semantic criteria above the threshold.")
-        db.close()
+        logger.info(f"Analysis complete. No jobs were found to process.")
         return
-        
-    # Update DB with similarity scores
-    cursor = db.conn.cursor()
-    for _, row in ranked_df.iterrows():
-        cursor.execute("UPDATE jobs SET similarity_score = ? WHERE job_id = ?", (row['similarity_score'], row['job_id']))
-    db.conn.commit()
-    db.close()
         
     os.makedirs("data", exist_ok=True)
     timestamp = datetime.now().strftime('%B_%d_%Y_%I-%M-%S_%p')
     file_name = f'data/SemanticJobSearchOutput_{timestamp}.csv'
     ranked_df.to_csv(file_name, index=False)
     
-    print("\n--- Top Semantic Matches ---")
-    print(ranked_df[['titles', 'companies', 'similarity_score']].head(10))
-    print(f"\nResults saved to {file_name}")
+    logger.info("\n--- Top Semantic Matches (Combined) ---")
+    logger.info(ranked_df[['titles', 'companies', 'similarity_score']].head(10))
+    
+    # Show top 3 for each specific profile
+    for key, p in PROFILES.items():
+        score_col = f"score_{key}"
+        top_p = ranked_df.sort_values(by=score_col, ascending=False).head(3)
+        logger.info(f"\n--- Top 3: {p['name']} ---")
+        logger.info(top_p[['titles', 'companies', score_col]])
+
+    logger.info(f"\nResults saved to {file_name}")
 
 if __name__ == '__main__':
+    setup_logging()
     parser = argparse.ArgumentParser(description="Job Finder Pipeline")
     parser.add_argument('--train', action='store_true', help="Run the training pipeline")
     parser.add_argument('--predict', action='store_true', help="Run the inference pipeline")
@@ -224,14 +273,22 @@ if __name__ == '__main__':
     parser.add_argument('--api', action='store_true', help="Use fast LinkedIn API discovery")
     parser.add_argument('--max-pages', type=int, default=5, help="Maximum number of pages/requests to scrape (default: 5)")
     parser.add_argument('--scrape-only', action='store_true', help="Scrape jobs into DB without running inference")
-    parser.add_argument('--distance', type=int, default=50, help="Search radius in miles for --api (default: 50)")
-    parser.add_argument('--f-tpr', type=str, choices=['r86400', 'r604800', 'r2592000'], help="Time Posted Range for --api: day, week, month")
+    parser.add_argument('--score-only', action='store_true', help="Run semantic scoring on DB without scraping new jobs")
+    parser.add_argument('--distance', type=int, default=DEFAULT_DISTANCE, help=f"Search radius in miles for --api (default: {DEFAULT_DISTANCE})")
+    parser.add_argument('--f-tpr', type=str, choices=['r86400', 'r172800', 'r604800', 'r2592000'], default='r2592000', help="Time Posted Range for --api: day, 2days, week, month (default: r2592000 for month)")
+    parser.add_argument('--keywords', type=str, default="Data Scientist", help="Keywords for search (default: 'Data Scientist')")
+    parser.add_argument('--location', type=str, default=DEFAULT_LOCATION, help=f"Location for search (default: '{DEFAULT_LOCATION}')")
     parser.add_argument('--scrolls-linkedin', type=int, default=40, help="Number of scrolls for LinkedIn (default: 40)")
     parser.add_argument('--scrolls-google', type=int, default=2, help="Number of scrolls for Google (default: 2)")
     parser.add_argument('--data', type=str, default='data/job_labels_196_rows_20250330.csv', help="Path to training data CSV")
     parser.add_argument('--synthetic', type=str, default='data/synthetic_jobs.csv', help="Path to synthetic data CSV")
+    parser.add_argument('--verbose', action='store_true', help="Enable detailed logging in terminal")
     
     args = parser.parse_args()
+    
+    # Initialize logging with dynamic level
+    log_level = logging.DEBUG if args.verbose else logging.INFO
+    setup_logging(level=log_level)
     
     if args.train:
         train_pipeline(args.data, args.synthetic)
@@ -239,11 +296,15 @@ if __name__ == '__main__':
         predict_pipeline(args.evaluate, num_scrolls_linkedin=args.scrolls_linkedin, num_scrolls_google=args.scrolls_google)
     elif args.semantic:
         semantic_pipeline(num_scrolls_linkedin=args.scrolls_linkedin, num_scrolls_google=args.scrolls_google, 
-                          scrape_only=args.scrape_only, use_auth=args.auth, max_pages=args.max_pages,
-                          use_api=args.api, distance=args.distance, f_tpr=args.f_tpr)
+                          scrape_only=args.scrape_only, score_only=args.score_only,
+                          use_auth=args.auth, max_pages=args.max_pages,
+                          use_api=args.api, distance=args.distance, f_tpr=args.f_tpr,
+                          keywords=args.keywords, location=args.location)
+    elif args.score_only:
+        semantic_pipeline(score_only=True)
     elif args.scrape_only and not args.semantic:
-        semantic_pipeline(num_scrolls_linkedin=args.scrolls_linkedin, num_scrolls_google=args.scrolls_google, 
-                          scrape_only=True, use_auth=args.auth, max_pages=args.max_pages,
-                          use_api=args.api, distance=args.distance, f_tpr=args.f_tpr)
+        semantic_pipeline(scrape_only=True, use_auth=args.auth, max_pages=args.max_pages,
+                          use_api=args.api, distance=args.distance, f_tpr=args.f_tpr,
+                          keywords=args.keywords, location=args.location)
     else:
         parser.print_help()

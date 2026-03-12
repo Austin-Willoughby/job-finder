@@ -3,6 +3,9 @@ OpenAI evaluation logic to determine job desirability
 """
 from openai import OpenAI
 from job_finder.config import OPENAI_API_KEY, PROFILE_TEXT, CRITERIA, MODEL_NAME
+from job_finder.logging_config import get_logger
+
+logger = get_logger(__name__)
 
 client = OpenAI(api_key=OPENAI_API_KEY)
 
@@ -38,6 +41,7 @@ Return only the integer rating (1–10), with no additional text.
 
     # accumulate usage
     total_tokens_used += resp.usage.total_tokens
+    logger.debug(f"OpenAI Rating for {title} @ {company}: {resp.choices[0].message.content.strip()} (Tokens used: {resp.usage.total_tokens})")
 
     try:
         return int(resp.choices[0].message.content.strip())

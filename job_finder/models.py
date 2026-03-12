@@ -15,8 +15,11 @@ from sklearn.preprocessing import MinMaxScaler
 from sklearn.decomposition import PCA
 
 from job_finder.config import KEYWORDS_BINS
-from job_finder.scraper import scrape_linkedin_jobs, scrape_google_jobs
+from job_finder.scraper import scrape_linkedin_jobs, scrape_linkedin_jobs_api, scrape_google_jobs
 from job_finder.features import keyword_match, preprocess_and_vectorize_data
+from job_finder.logging_config import get_logger
+
+logger = get_logger(__name__)
 
 def evaluate_models(tfidf_labelled, targets):
     """
@@ -107,7 +110,10 @@ def load_and_predict_new_jobs(
     count: int = 0,
     linkedin_cap: int = 5,
     num_scrolls_linkedin: int = 40,
-    num_scrolls_google: int = 2
+    num_scrolls_google: int = 2,
+    use_api: bool = False,              # If True, use fast API instead of Selenium
+    keywords: str = "Data Scientist",
+    location: str = "San Jose"
 ) -> pd.DataFrame:
     """
     Scrape new job postings from LinkedIn and/or Google, preprocess them,
@@ -116,10 +122,19 @@ def load_and_predict_new_jobs(
     dfs = []
     
     if count == 0 and include_linkedin:
-        linkedin_jobs_df = scrape_linkedin_jobs(max_jobs=linkedin_cap, num_scrolls=num_scrolls_linkedin)
-        linkedin_jobs_df['source'] = 'LinkedIn'
-        print("LinkedIn data scraped and included.")
-        dfs.append(linkedin_jobs_df)
+        if use_api:
+            logger.info(f"Using LinkedIn API discovery for {keywords} in {location}...")
+            linkedin_jobs_df = scrape_linkedin_jobs_api(keywords=keywords, location=location, max_jobs=linkedin_cap)
+        else:
+            logger.info("Using LinkedIn guest scraper (Selenium)...")
+            linkedin_jobs_df = scrape_linkedin_jobs(max_jobs=linkedin_cap, num_scrolls=num_scrolls_linkedin)
+        
+        if not linkedin_jobs_df.empty:
+            linkedin_jobs_df['source'] = 'LinkedIn'
+            logger.info(f"LinkedIn data scraped: {len(linkedin_jobs_df)} jobs.")
+            dfs.append(linkedin_jobs_df)
+        else:
+            logger.warning("LinkedIn scraping returned no results.")
     
     if scrape_google:
         google_jobs_df = scrape_google_jobs(job_board_url, num_scrolls=num_scrolls_google)

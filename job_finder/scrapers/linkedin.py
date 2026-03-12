@@ -148,6 +148,12 @@ class AuthenticatedLinkedInScraper:
 
             job_info["location"] = location_elem.get_text(strip=True) if location_elem else None
 
+            # Posting date in authenticated view
+            date_elem = soup.select_one('.job-details-jobs-unified-top-card__primary-description span:nth-child(3)') or \
+                        soup.select_one('span.tvm__text--low-emphasis:nth-child(3)') or \
+                        soup.select_one('.posted-time-ago__text')
+            job_info["posted_at"] = date_elem.get_text(strip=True) if date_elem else None
+
             desc_elem = soup.select_one('#workspace') or \
                         soup.select_one('.jobs-description__content') or \
                         soup.select_one('.show-more-less-html__markup')

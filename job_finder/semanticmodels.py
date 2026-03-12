@@ -42,8 +42,14 @@ def embed_texts(texts: list[str], is_query: bool = False) -> np.ndarray:
     """
     model = get_embedding_model()
     embeddings = []
-    
-    for text in texts:
+    total = len(texts)
+    for i, text in enumerate(texts):
+        # Progress counter for job descriptions (not for single queries)
+        count = i + 1
+        if not is_query:
+            if count in [1, 5, 10, 20, 50, 100] or count % 500 == 0 or count == total:
+                print(f"  > Processing item {count}/{total}...")
+
         # Format the text according to the specific Qwen Instruct template
         if is_query:
             # The query needs the Instruct prefix for maximum retrieval accuracy
@@ -57,10 +63,11 @@ def embed_texts(texts: list[str], is_query: bool = False) -> np.ndarray:
         
     return np.array(embeddings)
 
-def calculate_relevance(jobs_df: pd.DataFrame, target_text: str) -> pd.DataFrame:
+def calculate_relevance(jobs_df: pd.DataFrame, profile_embeddings: dict) -> pd.DataFrame:
     """
-    Calculates the cosine similarity between the target_text (profile)
+    Calculates the cosine similarity between multiple pre-embedded profiles
     and all job descriptions in the dataframe.
+    profile_embeddings: dict with keys like 'geospatial', 'energy', etc. and values as numpy arrays.
     """
     if jobs_df.empty:
         return jobs_df
@@ -73,28 +80,29 @@ def calculate_relevance(jobs_df: pd.DataFrame, target_text: str) -> pd.DataFrame
     print(f"Embedding {len(df)} job descriptions...")
     job_embeddings = embed_texts(df['desc'].tolist(), is_query=False)
     
-    print("Embedding target profile/criteria...")
-    target_embedding = embed_texts([target_text], is_query=True)
+    for key, target_embedding in profile_embeddings.items():
+        print(f"Calculating similarity scores for '{key}'...")
+        similarities = cosine_similarity(target_embedding, job_embeddings)
+        col_name = f"score_{key}"
+        df[col_name] = np.round(similarities[0] * 100, 2)
     
-    print("Calculating similarity scores...")
-    # Calculate cosine distance
-    similarities = cosine_similarity(target_embedding, job_embeddings)
-    
-    df['similarity_score'] = np.round(similarities[0] * 100, 2)
+    # Also set a main similarity_score (e.g., the maximum score across all profiles)
+    score_cols = [f"score_{key}" for key in profile_embeddings.keys()]
+    df['similarity_score'] = df[score_cols].max(axis=1)
     
     return df
 
-def rank_jobs(jobs_df: pd.DataFrame, target_text: str, score_threshold: float = 40.0) -> pd.DataFrame:
+def rank_jobs(jobs_df: pd.DataFrame, profiles: dict, score_threshold: float = 0.0) -> pd.DataFrame:
     """
-    Filter and rank jobs based on how semantically similar their description
-    is to the target text.
+    Filter and rank jobs based on multiple profiles.
+    Returns a DataFrame with all scores, sorted by the maximum similarity_score.
     """
-    scored_df = calculate_relevance(jobs_df, target_text)
+    scored_df = calculate_relevance(jobs_df, profiles)
     
     if scored_df.empty:
         return scored_df
         
-    # Filter and sort
+    # Filter: at least one profile must meet the threshold
     filtered_df = scored_df[scored_df['similarity_score'] >= score_threshold]
     ranked_df = filtered_df.sort_values(by='similarity_score', ascending=False).reset_index(drop=True)
     

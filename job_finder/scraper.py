@@ -17,6 +17,9 @@ from selenium.webdriver.chrome.options import Options
 import requests
 
 from job_finder.config import CHROMEDRIVER_PATH, CHROME_USER_DATA_DIR
+from job_finder.logging_config import get_logger
+
+logger = get_logger(__name__)
 
 def get_chrome_driver(options: Options = None, user_data_dir: str = None) -> webdriver.Chrome:
     """
@@ -29,7 +32,7 @@ def get_chrome_driver(options: Options = None, user_data_dir: str = None) -> web
         # Avoid escape sequence issues with backslashes on Windows
         safe_path = user_data_dir.replace("\\", "/")
         options.add_argument(f"user-data-dir={safe_path}")
-        print(f"Using Chrome user data directory: {safe_path}")
+        logger.debug(f"Using Chrome user data directory: {safe_path}")
         
     return webdriver.Chrome(options=options)
 
@@ -74,7 +77,7 @@ def scrape_linkedin_jobs(db=None, max_jobs: int = 5, num_scrolls: int = 40) -> p
 
     soup = BeautifulSoup(driver.page_source, 'html.parser')
     job_cards = soup.find_all('div', class_='base-card')
-    print(f"Total LinkedIn job cards found: {len(job_cards)}")
+    logger.info(f"Total LinkedIn job cards found: {len(job_cards)}")
     
     job_ids = []
     for card in job_cards:
@@ -84,7 +87,7 @@ def scrape_linkedin_jobs(db=None, max_jobs: int = 5, num_scrolls: int = 40) -> p
             job_id = card.get('data-entity-urn').split(":")[3]
             # Skip if we already have it in the database
             if db and db.job_exists(job_id):
-                print(f"Skipping already scraped job {job_id}")
+                logger.debug(f"Skipping already scraped job {job_id}")
                 continue
             job_ids.append(job_id)
         except AttributeError:
@@ -136,10 +139,13 @@ def scrape_linkedin_jobs(db=None, max_jobs: int = 5, num_scrolls: int = 40) -> p
                         job_info["location"] = None
 
                     try:
-                        job_info["desc"] = (soup.find("div", {"class": "show-more-less-html__markup"})
-                                                .get_text(separator=' ', strip=True))
-                    except AttributeError:
-                        job_info["desc"] = None
+                        time_elem = soup.select_one('span.topcard__flavor--metadata, time')
+                        if time_elem and time_elem.has_attr('datetime'):
+                            job_info["posted_at"] = time_elem['datetime']
+                        else:
+                            job_info["posted_at"] = time_elem.get_text(strip=True) if time_elem else None
+                    except:
+                        job_info["posted_at"] = None
 
                     job_info["job_id"] = job_id
                     job_info["source"] = "LinkedIn"
@@ -152,7 +158,7 @@ def scrape_linkedin_jobs(db=None, max_jobs: int = 5, num_scrolls: int = 40) -> p
                     time.sleep(random.uniform(5, 15))
                     success = True
                 except Exception as inner_e:
-                    print(f"Error scraping job_id {job_id} (attempt {retries+1}): {inner_e}")
+                    logger.error(f"Error scraping job_id {job_id} (attempt {retries+1}): {inner_e}")
                     retries += 1
                     try:
                         driver.quit()
@@ -196,30 +202,50 @@ def scrape_linkedin_jobs_api(db=None, keywords="Data Scientist", location="San J
         
         try:
             response = requests.get(base_search_url, params=params, headers=headers)
+            if response.status_code == 400 and start >= 1000:
+                logger.warning(f"LinkedIn Guest API limit reached (1000 jobs per query). "
+                               f"Stopped at start={start}. Try narrowing your search criteria (radius, timeframe) to get more results.")
+                break
             if response.status_code != 200:
-                print(f"Error fetching job list: {response.status_code}")
+                logger.error(f"Error fetching job list: {response.status_code}")
                 break
             
             soup = BeautifulSoup(response.text, 'html.parser')
             job_cards = soup.find_all('div', class_='base-card')
             if not job_cards:
-                print("No job cards found in API response.")
+                logger.info("No job cards found in API response.")
                 break
             
-            print(f"Total jobs found on API page: {len(job_cards)}")
+            logger.debug(f"Total jobs found on API page: {len(job_cards)}")
             
             job_ids = []
+            duplicate_count = 0
             for card in job_cards:
                 try:
                     job_id = card.get('data-entity-urn').split(":")[3]
                     if db and db.job_exists(job_id):
+                        duplicate_count += 1
+                        
+                        # Exponential backoff logging for duplicates
+                        should_log_dup = False
+                        if duplicate_count <= 10:
+                            should_log_dup = True
+                        elif duplicate_count in [20, 50, 100, 200, 500]:
+                            should_log_dup = True
+                        elif duplicate_count > 500 and duplicate_count % 1000 == 0:
+                            should_log_dup = True
+                            
+                        if should_log_dup:
+                            logger.debug(f"[{duplicate_count}] Duplicate found: {job_id}. Skipping.")
                         continue
                     job_ids.append(job_id)
                 except (AttributeError, IndexError):
+                    logger.debug("Failed to extract job_id from card, skipping.")
                     continue
             
-            print(f"Found {len(job_ids)} new job IDs on API page (start={start})")
+            logger.debug(f"Found {len(job_ids)} new job IDs on API page (start={start})")
             
+            job_count_on_page = 0
             for job_id in job_ids:
                 if len(jobs_list) >= max_jobs:
                     break
@@ -231,7 +257,6 @@ def scrape_linkedin_jobs_api(db=None, keywords="Data Scientist", location="San J
                         detail_soup = BeautifulSoup(detail_resp.text, 'html.parser')
                         job_info = {"job_id": job_id, "source": "LinkedIn"}
                         
-                        # Use existing parsing logic (DRY principle would be better but keeping it simple for now)
                         try:
                             job_info["companies"] = (detail_soup.find("div", {"class": "top-card-layout__card"})
                                                         .find("a").find("img").get('alt'))
@@ -247,17 +272,37 @@ def scrape_linkedin_jobs_api(db=None, keywords="Data Scientist", location="San J
                                                     .get_text(separator=' ', strip=True))
                         except: job_info["desc"] = None
                         
+                        try:
+                            # Try to find posting date using the identified selector or <time> tag
+                            time_elem = detail_soup.select_one('.posted-time-ago__text') or detail_soup.find("time")
+                            if time_elem and time_elem.has_attr('datetime'):
+                                job_info["posted_at"] = time_elem['datetime']
+                            else:
+                                job_info["posted_at"] = time_elem.get_text(strip=True) if time_elem else None
+                        except: job_info["posted_at"] = None
+                        
                         jobs_list.append(job_info)
                         if db:
                             db.insert_job(job_info)
                         
-                        print(f"Fetched {job_id}: {job_info['titles']}")
+                        current_count = len(jobs_list)
+                        # Log detailed info for first 5, then every 10th
+                        if current_count <= 5 or current_count % 10 == 0:
+                            logger.info(f"[{current_count}] Fetched: {job_info['titles']} @ {job_info['companies']}")
+                        
+                        # Summary log every 10
+                        if current_count % 10 == 0:
+                            logger.info(f"--- Total Jobs added this run: {current_count} ---")
+                        
                         time.sleep(random.uniform(2, 5))
+                        job_count_on_page += 1
                 except Exception as e:
-                    print(f"Error fetching details for {job_id}: {e}")
+                    logger.error(f"Error fetching details for {job_id}: {e}")
             
             start += 25
-            if not job_ids: # No more new jobs found
+            # We only stop if the API returns absolutely no more cards
+            if len(job_cards) == 0:
+                logger.info("No more job cards returned from API. Stopping.")
                 break
                 
         except Exception as e:

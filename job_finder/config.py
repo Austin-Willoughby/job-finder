@@ -16,6 +16,10 @@ OPENAI_API_KEY = os.getenv("OPENAISECRETKEY")
 # Example: r"C:\Users\awill\AppData\Local\Google\Chrome\User Data"
 CHROME_USER_DATA_DIR = os.getenv("CHROME_USER_DATA_DIR")
 
+# Default Search Parameters
+DEFAULT_LOCATION = "San Jose"
+DEFAULT_DISTANCE = 50
+
 # Fix python-dotenv mangling if backslashes were interpreted as escapes (e.g. \a -> \x07)
 if CHROME_USER_DATA_DIR:
     # Common mangled escapes in paths
@@ -64,14 +68,27 @@ KEYWORDS_BINS = {
     ]
 }
 
-PROFILE_TEXT = """
-M.S. Data Science graduate and M.S. Environmental Engineering graduate with 4 years of experience applying machine learning, geospatial analytics, and algorithm development to real-world problems 
-in climate tech, energy, and environmental sectors. Strong background in Python and SQL for data science, modeling, and production-grade analytics, with expertise in TensorFlow, scikit-learn, 
-GeoPandas, and remote sensing. Skilled in building custom models, physical system algorithms, and applied statistical solutions. Passionate about working on meaningful, mission-driven problems that 
-have tangible impact on critical industries such as energy, climate, infrastructure, and environmental resilience. Additional strengths include geospatial data science, remote sensing-based machine learning, methane leak detection, and physical system modeling. Skilled in building and scaling machine 
-learning algorithms for production systems, including customer-facing applications in climate tech, gas utilities, and infrastructure risk modeling. Experienced in ETL pipeline development, dashboard 
-creation, and applied statistical and deep learning techniques.
-"""
+PROFILES = {
+    "geospatial": {
+        "name": "Earth Systems & Geospatial",
+        "text": "Senior Geospatial Data Scientist focused on earth observation and remote sensing. Expert in Python (GeoPandas, Rasterio, Xarray) for processing satellite imagery and LiDAR data. Developing statistical models for climate change mitigation, natural disaster risk, or environmental monitoring. Experience with spatial modeling, GIS workflows, and applying machine learning to physical earth science problems for environmental impact."
+    },
+    "energy": {
+        "name": "Energy Infrastructure & Grid",
+        "text": "Data Scientist specializing in energy systems, the electric grid, and renewable energy integration. Analyzing time-series data from utilities, EV charging networks, or battery storage systems. Developing algorithms for grid optimization, load forecasting, and natural gas infrastructure safety. Focus on production-grade analytics and ML to improve energy efficiency and resource extraction reliability."
+    },
+    "cv_robotics": {
+        "name": "Applied Computer Vision & Robotics",
+        "text": "Machine Learning Engineer focused on computer vision and perception for robotics or autonomous sensing platforms. Developing CNNs, object detection, and segmentation models for real-world environmental or infrastructure inspection. Experience with OpenCV and PyTorch for analyzing spatial data or video feeds from drones (UAVs) and mobile sensors to solve industrial or scientific problems."
+    },
+    "llm_science": {
+        "name": "LLM & AI Engineering for Science",
+        "text": "AI Engineer building Large Language Model (LLM) applications for technical and scientific domains. Implementing RAG (Retrieval-Augmented Generation) and fine-tuning models to extract insights from vast libraries of environmental policy, energy research, or civil infrastructure documentation. Focus on building production AI tools that solve complex, real-world problems in mission-driven industries."
+    }
+}
+
+# Legacy support for main.py (will be refactored)
+PROFILE_TEXT = PROFILES["geospatial"]["text"]
 
 CRITERIA = """
 - Roles should primarily involve Python-based data science, machine learning, or algorithm development.

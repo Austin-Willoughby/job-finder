@@ -5,10 +5,13 @@ venv/
 .venv/
 env/
 
+# Scratchwork & Notebooks
+notebooks/
+.ipynb_checkpoints/
+
 # Python Cache & Tests
 __pycache__/
 .pytest_cache/
-.ipynb_checkpoints/
 *.py[cod]
 *$py.class
 
